@@ -157,21 +157,21 @@ namespace bbq {
     };
 
     inline uint64_t fetch_max(std::atomic<uint64_t> &atom, uint64_t upd) {
-        auto now = atom.load(std::memory_order_seq_cst);
+        auto now = atom.load(std::memory_order_acquire);
         while (!atom.compare_exchange_weak(now, std::max(now, upd),
-                                           std::memory_order_seq_cst,
-                                           std::memory_order_seq_cst))
-            now = atom.load(std::memory_order_seq_cst);
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_acquire))
+            now = atom.load(std::memory_order_acquire);
 
         return now;
     }
 
     template<typename T, size_t BN, size_t BS>
     QueueState<T, BS> BlockBoundedQueue<T, BN, BS>::allocate_entry(Block<T, BS> &block) {
-        if (off(block.allocated.load(std::memory_order_seq_cst)) >= BS)
+        if (off(block.allocated.load(std::memory_order_acquire)) >= BS)
             return BlockDone{};
 
-        auto old = block.allocated.fetch_add(1, std::memory_order_seq_cst);
+        auto old = block.allocated.fetch_add(1, std::memory_order_acq_rel);
         if (off(old) >= BS)
             return BlockDone{};
 
@@ -181,7 +181,7 @@ namespace bbq {
     template<typename T, size_t BN, size_t BS>
     void BlockBoundedQueue<T, BN, BS>::commit_entry(EntryDesc<T, BS> &e, T &data) {
         e.block->entries[e.off] = std::move(data);
-        e.block->committed.fetch_add(1, std::memory_order_seq_cst);
+        e.block->committed.fetch_add(1, std::memory_order_acq_rel);
     }
 
     template<typename T, size_t BN, size_t BS>
@@ -192,16 +192,16 @@ namespace bbq {
         switch (policy) {
             case Policy::RETRY_NEW:
                 // consumed
-                cur = n_blk.consumed.load(std::memory_order_seq_cst);
+                cur = n_blk.consumed.load(std::memory_order_acquire);
                 if (cur_vsn(cur) < head_vsn(ph) || (cur_vsn(cur) == head_vsn(ph) && off(cur) != BS)) {
-                    reserved = n_blk.reserved.load(std::memory_order_seq_cst);
+                    reserved = n_blk.reserved.load(std::memory_order_acquire);
                     if (off(reserved) == off(cur)) return NoEntry{};
                     else return NotAvailable{};
                 }
                 break;
             case Policy::DROP_OLD:
                 // committed
-                cur = n_blk.committed.load(std::memory_order_seq_cst);
+                cur = n_blk.committed.load(std::memory_order_acquire);
                 if (cur_vsn(cur) == head_vsn(ph) && off(cur) != BS)
                     return NotAvailable{};
                 break;
@@ -219,13 +219,13 @@ namespace bbq {
     template<typename T, size_t BN, size_t BS>
     QueueState<T, BS> BlockBoundedQueue<T, BN, BS>::reserve_entry(Block<T, BS> &block) {
         while (true) {
-            auto reserved = block.reserved.load(std::memory_order_seq_cst);
+            auto reserved = block.reserved.load(std::memory_order_acquire);
             if (off(reserved) < BS) {
-                auto committed = block.committed.load(std::memory_order_seq_cst);
+                auto committed = block.committed.load(std::memory_order_acquire);
                 if (off(committed) == off(reserved))
                     return NoEntry{};
                 if (off(committed) != BS) {
-                    auto allocated = block.allocated.load(std::memory_order_seq_cst);
+                    auto allocated = block.allocated.load(std::memory_order_acquire);
                     if (off(allocated) != off(committed))
                         return NotAvailable{};
                 }
@@ -246,10 +246,10 @@ namespace bbq {
         uint64_t allocated;
         switch (policy) {
             case Policy::RETRY_NEW:
-                e.block->consumed.fetch_add(1, std::memory_order_seq_cst);
+                e.block->consumed.fetch_add(1, std::memory_order_acq_rel);
                 break;
             case Policy::DROP_OLD:
-                allocated = e.block->allocated.load(std::memory_order_seq_cst);
+                allocated = e.block->allocated.load(std::memory_order_acquire);
                 if (cur_vsn(allocated) != e.vsn)
                     return nullptr;
                 break;
@@ -263,7 +263,7 @@ namespace bbq {
     template<typename T, size_t BN, size_t BS>
     bool BlockBoundedQueue<T, BN, BS>::advance_chead(uint64_t ch, uint64_t ver) {
         Block<T, BS> &n_blk = blocks[(idx(ch) + 1) % BN];
-        auto committed = n_blk.committed.load(std::memory_order_seq_cst);
+        auto committed = n_blk.committed.load(std::memory_order_acquire);
 
         switch (policy) {
             case Policy::RETRY_NEW:
@@ -288,7 +288,7 @@ namespace bbq {
     template<typename T, size_t BN, size_t BS>
     QueueStatus<T> BlockBoundedQueue<T, BN, BS>::enqueue(T &data) {
         while (true) {
-            auto ph = phead.load(std::memory_order_seq_cst);
+            auto ph = phead.load(std::memory_order_acquire);
             auto &blk = blocks[idx(ph)];
 
             QueueState<T, BS> ps;
@@ -317,7 +317,7 @@ namespace bbq {
     template<typename T, size_t BN, size_t BS>
     QueueStatus<T> BlockBoundedQueue<T, BN, BS>::dequeue() {
         while (true) {
-            auto ch = chead.load(std::memory_order_seq_cst);
+            auto ch = chead.load(std::memory_order_acquire);
             auto &blk = blocks[idx(ch)];
 
             T *data;
