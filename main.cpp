@@ -3,14 +3,14 @@
 #include <atomic>
 #include <variant>
 #include <chrono>
-#include "lockfree_queue.h"
+#include "benchmark/lockfree_queue.h"
 #include "bbq.h"
 
 using namespace bbq;
 
 void test_lock_free_queue() {
     const int M = 65536;
-    lockfree_queue<uint16_t> q;
+    LockFreeQueue<uint16_t> q(1024);
     std::atomic<uint16_t> seq{0};
     std::atomic<int> finished_producer{0};
 
@@ -189,10 +189,10 @@ void test_single() {
     std::cout << "============================================================" << std::endl;
 }
 
-int main() {
+//int main() {
 //    test_single();
-    test_lock_free_queue();
-    test_bbq();
-
-    return 0;
-}
+//    test_lock_free_queue();
+//    test_bbq();
+//
+//    return 0;
+//}

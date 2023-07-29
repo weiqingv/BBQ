@@ -1,5 +1,4 @@
-#ifndef LOCKLESS_BBQ_H
-#define LOCKLESS_BBQ_H
+#pragma once
 
 #include <memory>
 #include <thread>
@@ -102,12 +101,23 @@ namespace bbq {
         }
     };
 
-    template<typename T, size_t BN = 128, size_t BS = 128>
+    template<typename T, size_t BN = 8, size_t BS = 2048>
     class BlockBoundedQueue {
     public:
         QueueStatus<T> enqueue(T &);
 
         QueueStatus<T> dequeue();
+
+        bool push(T &);  // without failure reason
+
+        bool pop(T &);
+
+        explicit BlockBoundedQueue(size_t size) : phead(0), chead(0), policy(Policy::RETRY_NEW) {
+            for (size_t i = 1; i < BN; ++i) {
+                auto &blk = blocks[i];
+                blk.init(BS);
+            }
+        }
 
         explicit BlockBoundedQueue(Policy p) : phead(0), chead(0), policy(p) {
             for (size_t i = 1; i < BN; ++i) {
@@ -339,6 +349,61 @@ namespace bbq {
             }
         }
     }
-}
 
-#endif //LOCKLESS_BBQ_H
+    template<typename T, size_t BN, size_t BS>
+    bool BlockBoundedQueue<T, BN, BS>::push(T &value) {
+        while (true) {
+            auto ph = phead.load(std::memory_order_acquire);
+            auto &blk = blocks[idx(ph)];
+
+            QueueState<T, BS> ps;
+            auto state = allocate_entry(blk);
+            switch (state.index()) {
+                case ALLOCATED:
+                    commit_entry(std::get_if<Allocated<T, BS>>(&state)->e, value);
+                    return true;
+                case BLOCK_DONE:
+                    ps = advance_phead(ph);
+                    switch (ps.index()) {
+                        case NO_ENTRY:
+                            return false;
+                        case NOT_AVAILABLE:
+                            return false;
+                        case SUCCESS:
+                            continue;
+                    }
+                    break;
+                default:
+                    throw std::range_error("Invalid QueueState in enqueue: " + std::to_string(state.index()));
+            }
+        }
+    }
+
+    template<typename T, size_t BN, size_t BS>
+    bool BlockBoundedQueue<T, BN, BS>::pop(T &value) {
+        while (true) {
+            auto ch = chead.load(std::memory_order_acquire);
+            auto &blk = blocks[idx(ch)];
+
+            T *data;
+            auto state = reserve_entry(blk);
+            switch (state.index()) {
+                case RESERVED:
+                    data = consume_entry(std::get_if<Reserved<T, BS>>(&state)->e);
+                    if (data) {
+                        value = *data;
+                        return true;
+                    } else continue;
+                case NO_ENTRY:
+                    return false;
+                case NOT_AVAILABLE:
+                    return false;
+                case BLOCK_DONE:
+                    if (advance_chead(ch, std::get_if<BlockDone>(&state)->vsn)) continue;
+                    else return false;
+                default:
+                    throw std::range_error("Invalid QueueState in dequeue: " + std::to_string(state.index()));
+            }
+        }
+    }
+}
